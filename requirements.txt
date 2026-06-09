@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+alembic
+redis
+pwdlib[argon2]
+pyjwt
+python-dotenv
+python-multipart
