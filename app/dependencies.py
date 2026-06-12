@@ -8,7 +8,7 @@ from app import config, models
 
 oauth_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-def get_current_user(token: str = Depends(oauth_scheme), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(oauth_scheme), db: Session = Depends(get_db)):
   credentials_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="Could not validate credentials",
@@ -24,7 +24,8 @@ def get_current_user(token: str = Depends(oauth_scheme), db: Session = Depends(g
     raise credentials_exception
   
   stmt = select(models.User).where(models.User.username == username)
-  user = db.execute(stmt).scalar_one_or_none()
+  result = await db.execute(stmt)
+  user = result.scalar_one_or_none()
 
   if not user:
     raise credentials_exception
