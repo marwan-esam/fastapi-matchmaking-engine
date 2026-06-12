@@ -6,7 +6,6 @@ class ConnectionManager:
     self.game_states: dict[str, dict] = {}
 
   async def connect(self, websocket: WebSocket, match_id: str, username: str):
-    await websocket.accept()
 
     if match_id not in self.active_matches:
       self.active_matches[match_id] = []
