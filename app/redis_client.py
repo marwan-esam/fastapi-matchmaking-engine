@@ -1,17 +1,15 @@
-import redis
-from dotenv import dotenv_values
+from redis.asyncio import Redis, ConnectionPool
 
-config = dotenv_values(".env")
-REDIS_URL = config["REDIS_URL"]
+from app import config
 
-redis_pool = redis.ConnectionPool.from_url(REDIS_URL, decode_responses=True)
+redis_client = Redis.from_url(
+  config.REDIS_URL,
+  decode_responses=True,
+  max_connections=20
+)
 
-def get_redis():
-  client = redis.Redis(connection_pool=redis_pool)
-  try:
-    yield client
-  finally:
-    client.close()
+async def get_redis():
+  return redis_client
 
 
   
