@@ -1,6 +1,9 @@
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter, WebSocketRateLimiter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 import jwt
@@ -9,8 +12,9 @@ import redis.asyncio as redis
 from contextlib import asynccontextmanager
 import asyncio
 import redis.asyncio as redis
-from app.redis_client import redis_client
+from pyrate_limiter import Duration, Limiter, Rate
 
+from app.redis_client import redis_client
 from app.worker import matchmaking_queue, settlement_worker_loop
 from app import models, schemas, security, config
 from app.database import get_db
@@ -36,7 +40,7 @@ def create_access_token(data: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-  global redis_client
+  await FastAPILimiter.init(redis_client)
   # Create the background task to push it to the event loop
   matchmaker_task = asyncio.create_task(matchmaking_queue())
   settlement_task = asyncio.create_task(settlement_worker_loop())
@@ -50,7 +54,23 @@ async def lifespan(app: FastAPI):
   except asyncio.CancelledError:
     pass
 
+  await FastAPILimiter.close()
+
 app = FastAPI(title="Matchmaking Engine", lifespan=lifespan)
+
+origins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  # add production front end domain here 
+]
+
+app.add_middleware(
+  CORSMiddleware,
+  allow_origins=origins,
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
+)
 
 
 # ROUTERS
@@ -86,7 +106,7 @@ async def register_user(user_data: schemas.UserCreate, db: Session = Depends(get
   return new_user
 
 
-@app.post("/login", response_model=schemas.Token)
+@app.post("/login", response_model=schemas.Token, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
   # Verify user exists
   stmt = select(models.User).where(models.User.username == form_data.username)
@@ -109,7 +129,7 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Sessi
   }
 
 
-@app.post("/find-match", status_code=status.HTTP_202_ACCEPTED)
+@app.post("/find-match", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(RateLimiter(times=1, seconds=3))])
 async def find_match(
   current_user: models.User = Depends(get_current_user),
   db: Session = Depends(get_db),
@@ -249,9 +269,11 @@ async def match_websocket(
   
   await manager.connect(websocket, match_id, user.username)
 
+  ratelimit = WebSocketRateLimiter(times=3, seconds=5)
   try:
     while True:
       data = await websocket.receive_json()
+      await ratelimit(websocket, context_key=data)
 
       state = manager.game_states[match_id]
 
@@ -314,6 +336,10 @@ async def match_websocket(
           "state": state,
           "last_move": {"player": user.username, "position": position}
         })
+
+  except HTTPException as e:
+    if e.status_code == 429:
+      await websocket.send_json({"error": "Rate limit exceeded. Slow down!"})
 
   except WebSocketDisconnect:
     manager.disconnect(websocket, match_id)

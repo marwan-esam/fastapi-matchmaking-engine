@@ -9,3 +9,5 @@ pyjwt
 python-dotenv
 python-multipart
 asyncpg
+fastapi-limiter==0.1.5
+pyrate-limiter
