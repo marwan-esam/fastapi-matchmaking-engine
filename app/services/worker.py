@@ -7,9 +7,9 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession 
 
-from app.database import SessionLocal
-from app import models
-from app.redis_client import get_redis
+from app.db.database import SessionLocal
+from app.domain import models
+from app.db.redis_client import get_redis
 
 # from app.redis_client import redis_pool
 

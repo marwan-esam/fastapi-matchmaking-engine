@@ -9,8 +9,8 @@ from fastapi_limiter import FastAPILimiter
 import os
 
 from app.main import app
-from app.database import Base, get_db
-from app.redis_client import get_redis
+from app.db.database import Base, get_db
+from app.db.redis_client import get_redis
 
 os.environ["TESTING"] = "1"
 

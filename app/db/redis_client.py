@@ -1,6 +1,6 @@
 from redis.asyncio import Redis, ConnectionPool
 
-from app import config
+from app.core import config
 
 redis_client = Redis.from_url(
   config.REDIS_URL,

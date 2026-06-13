@@ -2,7 +2,7 @@ import uuid
 from sqlalchemy import Uuid, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.database import Base
 
 class User(Base):
   __tablename__ = "users"
