@@ -33,10 +33,10 @@ class ConnectionManager:
       if websocket in self.active_matches[match_id]:
         self.active_matches[match_id].remove(websocket)
 
-    if len(self.active_matches[match_id]) == 0:
-      del self.active_matches[match_id]
-      if match_id in self.game_states:
-        del self.game_states[match_id]
+      if len(self.active_matches[match_id]) == 0:
+        del self.active_matches[match_id]
+        if match_id in self.game_states:
+          del self.game_states[match_id]
 
 
   async def broadcast_to_match(self, match_id: str, message: dict):

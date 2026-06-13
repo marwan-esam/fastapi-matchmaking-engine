@@ -11,6 +11,7 @@ import json
 import redis.asyncio as redis
 from contextlib import asynccontextmanager
 import asyncio
+import os
 import redis.asyncio as redis
 from pyrate_limiter import Duration, Limiter, Rate
 
@@ -40,10 +41,13 @@ def create_access_token(data: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-  await FastAPILimiter.init(redis_client)
   # Create the background task to push it to the event loop
-  matchmaker_task = asyncio.create_task(matchmaking_queue())
-  settlement_task = asyncio.create_task(settlement_worker_loop())
+  if not os.getenv("TESTING"):
+    await FastAPILimiter.init(redis_client)
+    matchmaker_task = asyncio.create_task(matchmaking_queue(redis_client))
+    settlement_task = asyncio.create_task(settlement_worker_loop(redis_client))
+  else:
+    matchmaker_task = settlement_task = None
   yield
 
   # SHUTDOWN
@@ -133,9 +137,8 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Sessi
 async def find_match(
   current_user: models.User = Depends(get_current_user),
   db: Session = Depends(get_db),
-  # redis_client: redis.Redis = Depends(get_redis)
+  redis_client: redis.Redis = Depends(get_redis)
 ):
-  redis_client = await get_redis()
   # Fetch user stats
   stmt = select(models.Stat).where(models.Stat.user_id == current_user.id)
   result = await db.execute(stmt)
@@ -171,10 +174,8 @@ async def find_match(
 @app.post("/cancel-match", status_code=status.HTTP_200_OK)
 async def cancel_match(
   current_user: models.User = Depends(get_current_user),
-  # redis_client: redis.Redis = Depends(get_redis)
+  redis_client: redis.Redis = Depends(get_redis)
 ):
-  redis_client = await get_redis()
-  
   removed_count = await redis_client.zrem("matchmaking_queue", str(current_user.id))
 
   if removed_count == 0:
@@ -200,7 +201,7 @@ async def handle_forfeit_timer(match_id: str, dropped_username: str, dropped_use
   if not state:
     return
   
-  winner_username = [p for p in manager.game_states[match_id]["players"] if p != dropped_username][0]
+  winner_username = [p for p in state["players"] if p != dropped_username][0]
 
   async with SessionLocal() as db:
     stmt = select(models.User).where(models.User.username == winner_username)
@@ -223,15 +224,21 @@ async def handle_forfeit_timer(match_id: str, dropped_username: str, dropped_use
     await redis_client.delete(f"match_user:{winner_id}")
 
   await manager.broadcast_to_match(match_id, {
-    "type": "game over",
+    "type": "game_over",
     "winner": winner_username,
-    "system_message": "Opponent abndoned the match. You win by forfeit"
+    "system_message": "Opponent abandoned the match. You win by forfeit"
   })
 
-  del manager.active_matches[match_id]
-  del manager.game_states[match_id]
+  for ws in list(manager.active_matches.get(match_id, [])):
+    try:
+      await ws.close()
+    except Exception:
+      pass
 
-
+  if match_id in manager.active_matches:
+    del manager.active_matches[match_id]
+  if match_id in manager.game_states:
+    del manager.game_states[match_id]
   
 
 @app.websocket("/ws/match/{match_id}")
@@ -241,7 +248,7 @@ async def match_websocket(
   db: Session = Depends(get_db),
   redis_client: redis.Redis = Depends(get_redis)
 ):
-  websocket.accept()
+  await websocket.accept()
   try:
     auth_data = await websocket.receive_json()
 
@@ -269,15 +276,22 @@ async def match_websocket(
   
   await manager.connect(websocket, match_id, user.username)
 
-  ratelimit = WebSocketRateLimiter(times=3, seconds=5)
+  ratelimit = WebSocketRateLimiter(times=10, seconds=5)
   try:
     while True:
       data = await websocket.receive_json()
-      await ratelimit(websocket, context_key=data)
+      await ratelimit(websocket, context_key=user.username)
 
-      state = manager.game_states[match_id]
+      state = manager.game_states.get(match_id)
 
-      if not state or len(state["players"]) < 2:
+      if not state:
+        try:
+          await websocket.close()
+        except Exception:
+          pass
+        break
+
+      if len(state["players"]) < 2:
         await websocket.send_json({"error": "Waiting for opponent"})
         continue
 
@@ -298,6 +312,9 @@ async def match_websocket(
       result = manager.check_win_condition(state["board"])
 
       if result:
+        if match_id in manager.game_states:
+          del manager.game_states[match_id]
+
         await manager.broadcast_to_match(match_id, {
           "type": "game_over",
           "winner": result,
@@ -322,9 +339,10 @@ async def match_websocket(
 
         await redis_client.rpush("settlement_queue", json.dumps(settlement_payload))
 
-        manager.disconnect(websocket, match_id)
-
-        await websocket.close()
+        # await websocket.close()
+        
+        if match_id in manager.active_matches:
+          del manager.active_matches[match_id]
         break 
 
       
@@ -339,26 +357,39 @@ async def match_websocket(
 
   except HTTPException as e:
     if e.status_code == 429:
-      await websocket.send_json({"error": "Rate limit exceeded. Slow down!"})
+      try:
+        await websocket.send_json({"error": "Rate limit exceeded. Slow down!"})
+        await websocket.close()
+      except Exception:
+        pass
+
+      if match_id in manager.game_states:
+        manager.disconnect(websocket, match_id)
+        if match_id in manager.active_matches:
+          await manager.broadcast_to_match(match_id, {
+            "type": "error",
+            "system_message": f"{user.username} has disconnected. Waiting 30 seconds for reconnection..."
+          })
+
+        asyncio.create_task(handle_forfeit_timer(match_id, user.username, str(user.id), redis_client))
+
 
   except WebSocketDisconnect:
-    manager.disconnect(websocket, match_id)
+    if match_id in manager.game_states:
+      manager.disconnect(websocket, match_id)
+      if match_id in manager.active_matches:
+        await manager.broadcast_to_match(match_id, {
+          "type": "error",
+          "system_message": f"{user.username} was disconnected for spamming. Waiting 30 seconds for reconnection..."
+        })
 
-    if match_id in manager.active_matches:
-      await manager.broadcast_to_match(match_id, {
-        "type": "error",
-        "system_message": f"{user.username} has disconnected. Waiting 30 seconds for reconnection..."
-      })
-
-    asyncio.create_task(handle_forfeit_timer(match_id, user.username, str(user.id), redis_client))
+      asyncio.create_task(handle_forfeit_timer(match_id, user.username, str(user.id), redis_client))
 
 @app.get("/match-status", status_code=status.HTTP_200_OK)
 async def get_match_status(
     current_user: models.User = Depends(get_current_user),
-    # redis_client: redis.Redis = Depends(get_redis)
+    redis_client: redis.Redis = Depends(get_redis)
 ):
-  redis_client = await get_redis()
-  
   user_id = str(current_user.id)
   match_id = await redis_client.get(f"match_user:{user_id}")
 

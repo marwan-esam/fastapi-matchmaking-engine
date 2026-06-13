@@ -1,6 +1,6 @@
 import asyncio
 from fastapi import Depends
-from redis import Redis
+import redis.asyncio as redis
 import uuid
 import logging
 import json
@@ -16,9 +16,9 @@ from app.redis_client import get_redis
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def matchmaking_queue():
+async def matchmaking_queue(redis_client: redis.Redis):
   # redis_client = Redis(connection_pool=redis_pool)
-  redis_client = await get_redis()
+  # redis_client = await get_redis()
 
   logger.info("Matchmaker worker started. Scanning arena queue...")
   try:
@@ -63,9 +63,9 @@ def calculate_new_elo(winner_elo: int, loser_elo: int) -> tuple[int, int]:
   return new_winner_elo, new_loser_elo
 
 
-async def settlement_worker_loop():
+async def settlement_worker_loop(redis_client: redis.Redis):
   # redis_client = Redis(connection_pool=redis_pool)
-  redis_client = await get_redis()
+  # redis_client = await get_redis()
 
   try:
     while True:
