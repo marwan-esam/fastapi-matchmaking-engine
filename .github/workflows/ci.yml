@@ -47,6 +47,11 @@ jobs:
       - name: Execute Pytest Suite
         env:
           TESTING: "1"
+          SQLALCHEMY_DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/matchmaking_test"
+          REDIS_URL: "redis://localhost:6379"
+          SECRET_KEY: "dummy-secret-key-for-testing"
+          ALGORITHM: "HS256"
+          ACCESS_TOKEN_EXPIRE_MINUTES: "30"
         run: |
           pytest -v
 
